@@ -858,6 +858,8 @@ mod tests {
 
     #[tokio::test]
     async fn weston_test() {
+        env_logger::init_from_env(env_logger::Env::new().filter_or("LOG_LEVEL", "trace"));
+
         let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
         let credentials_provider = DefaultCredentialsChain::builder()
             .region(region_provider.region().await)
