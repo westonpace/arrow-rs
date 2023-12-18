@@ -727,3 +727,156 @@ impl ListClient for S3Client {
 fn encode_path(path: &Path) -> PercentEncode<'_> {
     utf8_percent_encode(path.as_ref(), &STRICT_PATH_ENCODE_SET)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aws::AmazonS3Builder;
+    use crate::aws::AwsCredential as ObjectStoreAwsCredential;
+    use crate::path::Path;
+    use crate::CredentialProvider;
+    use crate::ObjectStore;
+    use crate::Result as ObjectStoreResult;
+    use aws_config::default_provider::credentials::DefaultCredentialsChain;
+    use aws_config::meta::region::RegionProviderChain;
+    use aws_credential_types::provider::error::CredentialsError;
+    use aws_credential_types::provider::ProvideCredentials;
+    use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+    use tokio::sync::RwLock;
+
+    const AWS_CREDS_CACHE_KEY: &str = "aws_credentials";
+
+    /// Adapt an AWS SDK cred into object_store credentials
+    #[derive(Debug)]
+    struct AwsCredentialAdapter {
+        pub inner: Arc<dyn ProvideCredentials>,
+
+        // RefCell can't be shared accross threads, so we use HashMap
+        cache: Arc<RwLock<HashMap<String, Arc<aws_credential_types::Credentials>>>>,
+
+        // The amount of time before expiry to refresh credentials
+        credentials_refresh_offset: Duration,
+    }
+
+    impl AwsCredentialAdapter {
+        fn new(
+            provider: Arc<dyn ProvideCredentials>,
+            credentials_refresh_offset: Duration,
+        ) -> Self {
+            Self {
+                inner: provider,
+                cache: Arc::new(RwLock::new(HashMap::new())),
+                credentials_refresh_offset,
+            }
+        }
+    }
+
+    /// Adapt an object_store credentials into AWS SDK creds
+    #[derive(Debug)]
+    struct OSObjectStoreToAwsCredAdaptor(AwsCredentialProvider);
+
+    impl ProvideCredentials for OSObjectStoreToAwsCredAdaptor {
+        fn provide_credentials<'a>(
+            &'a self,
+        ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+        where
+            Self: 'a,
+        {
+            aws_credential_types::provider::future::ProvideCredentials::new(async {
+                let creds = self
+                    .0
+                    .get_credential()
+                    .await
+                    .map_err(|e| CredentialsError::provider_error(Box::new(e)))?;
+                Ok(aws_credential_types::Credentials::new(
+                    &creds.key_id,
+                    &creds.secret_key,
+                    creds.token.clone(),
+                    Some(
+                        SystemTime::now()
+                            .checked_add(Duration::from_secs(
+                                60 * 10, //  10 min
+                            ))
+                            .expect("overflow"),
+                    ),
+                    "",
+                ))
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CredentialProvider for AwsCredentialAdapter {
+        type Credential = ObjectStoreAwsCredential;
+
+        async fn get_credential(&self) -> ObjectStoreResult<Arc<Self::Credential>> {
+            let cached_creds = {
+                let cache_value = self.cache.read().await.get(AWS_CREDS_CACHE_KEY).cloned();
+                let expired = cache_value
+                    .clone()
+                    .map(|cred| {
+                        cred.expiry()
+                            .map(|exp| {
+                                exp.checked_sub(self.credentials_refresh_offset)
+                                    .expect("this time should always be valid")
+                                    < SystemTime::now()
+                            })
+                            // no expiry is never expire
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true); // no cred is the same as expired;
+                if expired {
+                    None
+                } else {
+                    cache_value.clone()
+                }
+            };
+
+            if let Some(creds) = cached_creds {
+                Ok(Arc::new(Self::Credential {
+                    key_id: creds.access_key_id().to_string(),
+                    secret_key: creds.secret_access_key().to_string(),
+                    token: creds.session_token().map(|s| s.to_string()),
+                }))
+            } else {
+                let refreshed_creds = Arc::new(self.inner.provide_credentials().await.unwrap());
+
+                self.cache
+                    .write()
+                    .await
+                    .insert(AWS_CREDS_CACHE_KEY.to_string(), refreshed_creds.clone());
+
+                Ok(Arc::new(Self::Credential {
+                    key_id: refreshed_creds.access_key_id().to_string(),
+                    secret_key: refreshed_creds.secret_access_key().to_string(),
+                    token: refreshed_creds.session_token().map(|s| s.to_string()),
+                }))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn weston_test() {
+        let region_provider = RegionProviderChain::default_provider().or_else("us-east-1");
+        let credentials_provider = DefaultCredentialsChain::builder()
+            .region(region_provider.region().await)
+            .build()
+            .await;
+
+        let aws_creds = Arc::new(AwsCredentialAdapter::new(
+            Arc::new(credentials_provider),
+            Duration::from_secs(60),
+        ));
+
+        let s3 = AmazonS3Builder::new()
+            .with_bucket_name("weston-s3-lance-test")
+            .with_region("us-east-1")
+            .with_allow_http(true)
+            .with_credentials(aws_creds)
+            .build()
+            .unwrap();
+        let results = s3.list_with_delimiter(None).await.unwrap();
+        dbg!(results);
+    }
+}
