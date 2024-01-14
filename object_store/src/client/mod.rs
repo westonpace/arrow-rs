@@ -539,7 +539,10 @@ impl ClientOptions {
         }
 
         if let Some(timeout) = &self.timeout {
+            println!("Setting client timeout to {:?}", &timeout);
             builder = builder.timeout(timeout.get()?)
+        } else {
+            println!("THERE IS NO CLIENT TIMEOUT!");
         }
 
         if let Some(timeout) = &self.connect_timeout {

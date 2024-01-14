@@ -245,6 +245,7 @@ impl RetryExt for reqwest::RequestBuilder {
                             }
 
                             let sleep = backoff.next();
+                            println!("BACKING OFF FOR {:?}", sleep);
                             retries += 1;
                             info!(
                                 "Encountered server error, backing off for {} seconds, retry {} of {}: {}",
@@ -282,6 +283,7 @@ impl RetryExt for reqwest::RequestBuilder {
                             })
                         }
                         let sleep = backoff.next();
+                        println!("BACKING OFF FOR {:?}", sleep);
                         retries += 1;
                         info!(
                             "Encountered transport error backing off for {} seconds, retry {} of {}: {}", 

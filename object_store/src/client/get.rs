@@ -55,9 +55,7 @@ impl<T: GetClient> GetClientExt for T {
                 source: Box::new(e),
             })?;
         }
-        println!("ISSUE REQ");
         let response = self.get_request(location, options).await?;
-        println!("GRAB BODY");
         get_result::<T>(location, range, response).map_err(|e| crate::Error::Generic {
             store: T::STORE,
             source: Box::new(e),
@@ -170,7 +168,6 @@ fn get_result<T: GetClient>(
             source: Box::new(source),
         })
         .boxed();
-    println!("BODY RECEIVED");
 
     Ok(GetResult {
         range,
