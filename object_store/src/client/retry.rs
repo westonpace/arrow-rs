@@ -266,12 +266,15 @@ impl RetryableRequest {
                     Err(e) => {
                         let e = sanitize_err(e);
                         let status = r.status();
+
+                        let txt = dbg!(r.text().await);
+
                         if retries == max_retries
                             || now.elapsed() > retry_timeout
                             || !status.is_server_error()
                         {
                             return Err(match status.is_client_error() {
-                                true => match r.text().await {
+                                true => match txt {
                                     Ok(body) => Error::Client {
                                         body: Some(body).filter(|b| !b.is_empty()),
                                         status,
