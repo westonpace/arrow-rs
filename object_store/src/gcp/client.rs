@@ -493,6 +493,8 @@ impl GoogleCloudStorageClient {
             // https://github.com/tafia/quick-xml/issues/350
             .replace("&quot;", "\"");
 
+        dbg!(&data);
+
         let response = self
             .client
             .request(Method::POST, &url)
